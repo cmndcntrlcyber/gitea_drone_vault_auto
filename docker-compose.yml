@@ -1,10 +1,9 @@
 version: "3.7"
 services:
   gitea-server:
-    image: gitea/gitea
+    image: gitea/gitea:latest
     depends_on:
       - redis-server
-      # - mysql-server
     container_name: gitea-server
     ports:
       - "${GITEA_DOMAIN_PORT}:${GITEA_DOMAIN_PORT}"
@@ -14,50 +13,67 @@ services:
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
     environment:
       - TZ=Asia/Shanghai
-      - RUN_MODE=dev
+      - RUN_MODE=prod
     restart: always
     networks:
       - git-network
     deploy:
       endpoint_mode: vip
       replicas: 1
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
       placement:
         constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${GITEA_DOMAIN_PORT}/api/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   minio-s3-server:
-    image: minio/minio:edge
+    image: minio/minio:latest
     container_name: minio-s3-server
     volumes:
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
       - ${BASE_PATH}/minio_s3:/data
-      # default bucket maybe for drone
-      - ${BASE_PATH}/minio_s3/drone:/never_to_be_used
-    command: server /data
+    command: server /data --console-address ":9001"
     ports:
       - "9009:9000"
+      - "9001:9001"
     environment:
       - LANG=en_US.UTF-8
       - TZ=Asia/Shanghai
       - MINIO_REGION_NAME=my_region
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
     restart: always
     networks:
       - git-network
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
       placement:
         constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   drone-server:
-    image: drone/drone
+    image: drone/drone:latest
     depends_on:
       - gitea-server
     container_name: drone-server
     ports:
       - "5000:80"
     volumes:
-      # - ${BASE_PATH}/drone_:/var/lib/drone
       - ${BASE_PATH}/drone_:/data
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
     restart: always
@@ -69,10 +85,9 @@ services:
       - DRONE_S3_PATH_STYLE=true
       - DRONE_S3_SKIP_VERIFY=true
       - DRONE_S3_PREFIX=logs
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - DRONE_S3_BUCKET=drone
-      # - AWS_DEFAULT_REGION=us-east-1
       - AWS_REGION=my_region
       # jsonnet
       - DRONE_JSONNET_ENABLED=true
@@ -89,33 +104,37 @@ services:
       - TZ=Asia/Shanghai
       - DRONE_OPEN=true
       - DRONE_GIT_ALWAYS_AUTH=true
-      - DRONE_RPC_SECRET=drone_secret_by_jyao
+      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET:-drone_secret_by_jyao}
       # user
-      - DRONE_USER_CREATE=username:jyao,admin:true
+      - DRONE_USER_CREATE=${DRONE_ADMIN_USER:-username:jyao,admin:true}
       # ssl
       - DRONE_GITEA_SKIP_VERIFY=true
-      - DRONE_GITHUB_SKIP_VERIFY=true
-      - DRONE_GOGS_SKIP_VERIFY=true
       - DRONE_SERVER_PROTO=${DRONE_SERVER_PROTO}
-      - DRONE_VALIDATE_PLUGIN_SKIP_VERIFY=true
-      - DRONE_WEBHOOK_SKIP_VERIFY=true
-      # - DRONE_TLS_AUTOCERT=true
-      # - DRONE_HTTP_SSL_REDIRECT=true
       # log
       - DRONE_LOGS_COLOR=true
       # cron
       - DRONE_CRON_INTERVAL=1h
       # cookie
-      - DRONE_COOKIE_SECRET=bea26a2221fd8090ea38720fc445eca6
+      - DRONE_COOKIE_SECRET=${DRONE_COOKIE_SECRET:-bea26a2221fd8090ea38720fc445eca6}
       - DRONE_STATUS_NAME=continuous-integration/drone
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
       placement:
         constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # vault
   vault-server:
-    image: vault
+    image: vault:latest
     container_name: vault-server
     privileged: false
     command: ["server"]
@@ -126,26 +145,29 @@ services:
     cap_add:
       - IPC_LOCK
     volumes:
-      # - ${BASE_PATH}/vault/logs:/vault/logs
       - ${BASE_PATH}/vault:/vault
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
-    # - ${BASE_PATH}/vault/config:/vault/config
     ports:
       - "8200:8200"
     environment:
       - LANG=en_US.UTF-8
       - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN}
-    # - VAULT_API_ADDR=http://0.0.0.0:8200
-    # - SKIP_SETCAP=true
-    # - VAULT_LOCAL_CONFIG='{backend: {file: {path: /vault/file}}, default_lease_ttl: 168h, max_lease_ttl: 720h}'
-    # - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
       placement:
         constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   drone-vault:
-    image: drone/vault
+    image: drone/vault:latest
     depends_on:
       - vault-server
     container_name: drone-vault
@@ -155,24 +177,31 @@ services:
       - 3000
     environment:
       - LANG=en_US.UTF-8
-      - DRONE_DEBUG=true
       - VAULT_TOKEN=${VAULT_TOKEN}
       - VAULT_ADDR=http://vault-server:8200
-      - DRONE_SECRET=provide_drone_vault_token_key_by_jyao
+      - DRONE_SECRET=${DRONE_VAULT_SECRET:-provide_drone_vault_token_key_by_jyao}
       - TZ=Asia/Shanghai
     restart: always
     networks:
       - git-network
     deploy:
-      replicas: 3
+      replicas: 2
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
       placement:
         constraints: [node.role == worker]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   docker-runner:
-    image: drone/drone-runner-docker
+    image: drone/drone-runner-docker:latest
     depends_on:
       - drone-vault
-    # container_name: docker-runner
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -180,38 +209,41 @@ services:
       # vault config
       - DRONE_SECRET_PLUGIN_SKIP_VERIFY=true
       - DRONE_SECRET_PLUGIN_ENDPOINT=http://drone-vault:3000
-      - DRONE_SECRET_PLUGIN_TOKEN=provide_drone_vault_token_key_by_jyao
+      - DRONE_SECRET_PLUGIN_TOKEN=${DRONE_VAULT_SECRET:-provide_drone_vault_token_key_by_jyao}
       # runner config
       - DRONE_RPC_SKIP_VERIFY=true
       - DRONE_RPC_PROTO=http
       - DRONE_RPC_HOST=drone-server
-      - DRONE_RPC_SECRET=drone_secret_by_jyao
+      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET:-drone_secret_by_jyao}
       - DRONE_RUNNER_CAPACITY=12
-      - DRONE_RUNNER_NAME=ub-jy
-        # - DRONE_RUNNER_LABELS=foo:bar,baz:qux,host:${HOSTNAME}
+      - DRONE_RUNNER_NAME=${HOSTNAME:-runner}-docker-${DRONE_RUNNER_NUMBER:-1}
       - DRONE_UI_USERNAME=${DRONE_UI_USERNAME}
       - DRONE_UI_PASSWORD=${DRONE_UI_PASSWORD}
       - DRONE_MEMORY_SWAP_LIMIT=500000000
       - TZ=Asia/Shanghai
       # just docker
       - DRONE_RUNNER_VOLUMES=/etc/docker/daemon.json:/etc/docker/daemon.json,/tmp/var/lib/docker:/var/lib/docker,/root/.m2:/root/.m2
-      # other CONFIG
-      - DRONE_RPC_DUMP_HTTP=true
-      - DRONE_RPC_DUMP_HTTP_BODY=true
-      - DRONE_TRACE=true
-      - DRONE_DEBUG=true
     restart: always
     ports:
       - "3000"
     networks:
       - git-network
     deploy:
-      replicas: 3
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
       placement:
         constraints: [node.role == worker]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   ssh-runner:
-    image: drone/drone-runner-ssh
+    image: drone/drone-runner-ssh:latest
     depends_on:
       - drone-server
     environment:
@@ -219,56 +251,72 @@ services:
       # vault config
       - DRONE_SECRET_PLUGIN_SKIP_VERIFY=true
       - DRONE_SECRET_PLUGIN_ENDPOINT=http://drone-vault:3000
-      - DRONE_SECRET_PLUGIN_TOKEN=provide_drone_vault_token_key_by_jyao
+      - DRONE_SECRET_PLUGIN_TOKEN=${DRONE_VAULT_SECRET:-provide_drone_vault_token_key_by_jyao}
       # runner config
       - DRONE_RPC_SKIP_VERIFY=true
       - DRONE_RPC_PROTO=http
       - DRONE_RPC_HOST=drone-server
-      - DRONE_RPC_SECRET=drone_secret_by_jyao
+      - DRONE_RPC_SECRET=${DRONE_RPC_SECRET:-drone_secret_by_jyao}
       - DRONE_RUNNER_CAPACITY=12
-      - DRONE_RUNNER_NAME=ub-jy
-        #  - DRONE_RUNNER_LABELS=foo:bar,baz:qux,host:${HOSTNAME}
+      - DRONE_RUNNER_NAME=${HOSTNAME:-runner}-ssh-${DRONE_RUNNER_NUMBER:-1}
       - DRONE_UI_USERNAME=${DRONE_UI_USERNAME}
       - DRONE_UI_PASSWORD=${DRONE_UI_PASSWORD}
       - DRONE_MEMORY_SWAP_LIMIT=500000000
       - TZ=Asia/Shanghai
-      # other CONFIG
-      - DRONE_RPC_DUMP_HTTP=true
-      - DRONE_RPC_DUMP_HTTP_BODY=true
-      - DRONE_TRACE=true
-      - DRONE_DEBUG=true
     restart: always
     ports:
       - "3000"
     networks:
       - git-network
     deploy:
-      replicas: 3
+      replicas: 2
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
       placement:
         constraints: [node.role == worker]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   docker-registry:
-    image: registry
+    image: registry:latest
     container_name: docker-registry
     volumes:
+      - ${BASE_PATH}/registry:/var/lib/registry
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
     ports:
       - "5003:5000"
     environment:
       - LANG=en_US.UTF-8
       - TZ=Asia/Shanghai
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
     restart: always
     networks:
       - git-network
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
       placement:
         constraints: [node.role == worker]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/v2/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   redis-server:
-    image: redis
+    image: redis:alpine
     volumes:
+      - ${BASE_PATH}/redis:/data
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
+    command: ["redis-server", "--appendonly", "yes"]
     environment:
       - LANG=en_US.UTF-8
       - TZ=Asia/Shanghai
@@ -277,11 +325,20 @@ services:
       - git-network
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
       placement:
         constraints: [node.role == worker]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   adminer-server:
-    image: adminer
+    image: adminer:latest
     volumes:
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
     environment:
@@ -293,11 +350,20 @@ services:
       - 30088:8080
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
       placement:
         constraints: [node.role == worker]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   nginx-server:
-    image: nginx
+    image: nginx:alpine
     container_name: nginx-server
     depends_on:
       - docker-runner
@@ -317,24 +383,41 @@ services:
       - git-network
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
       placement:
         constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   watchtower-server:
-    image: containrrr/watchtower
-    command: ["--cleanup","--debug"]
+    image: containrrr/watchtower:latest
+    command: ["--cleanup", "--interval", "86400"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TZ=Asia/Shanghai
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_NO_RESTART=false
+      - WATCHTOWER_ROLLING_RESTART=true
     restart: always
     networks:
       - git-network
     deploy:
       mode: global
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
       placement:
-        constraints: [node.role == worker]        
+        constraints: [node.role == worker]
+
 networks:
   git-network:
     attachable: true
-    # driver: overlay
-# network_mode: overlay

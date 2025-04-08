@@ -2,10 +2,8 @@ version: "3.7"
 services:
   # mysql
   mysql-server:
-    image: mysql
+    image: mysql:8
     container_name: mysql-server
-    # depends_on:
-    # - redis-server
     privileged: true
     command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci
     restart: always
@@ -15,18 +13,28 @@ services:
       - ${BASE_PATH}/mysql_/custom:/etc/mysql/conf.d
       - ${BASE_PATH}/mysql_/datadir:/var/lib/mysql
       - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     ports:
       - "3366:3306"
     environment:
       - LANG=en_US.UTF-8
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=gitea
+      - TZ=Asia/Shanghai
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
       placement:
         constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 networks:
   git-network:
-    # driver: overlay
-# network_mode: overlay
+    external: true
